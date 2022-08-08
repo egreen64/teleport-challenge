@@ -260,26 +260,26 @@ type JobId string
 type JobAdminState int32
 
 const (
-	JOB_ADMIN_STATE_UNSPECIFIED JobAdminState = 0 //denotes unspecified admin state
-	JOB_ADMIN_STATE_STARTED     JobAdminState = 1 //denotes Job has been started
-	JOB_ADMIN_STATE_STOPPED     JobAdminState = 2 //denotes Job has been stopped
+	JOB_ADMIN_STATE_UNSPECIFIED JobAdminState = iota //denotes unspecified admin state
+	JOB_ADMIN_STATE_STARTED                          //denotes Job has been started
+	JOB_ADMIN_STATE_STOPPED                          //denotes Job has been stopped
 )
 
 type JobOperStatus int32
 
 const (
-	JOB_OPER_STATUS_UNSPECIFIED JobOperStatus = 0 //denotes unspecified oper status
-	JOB_OPER_STATUS_PENDING     JobOperStatus = 1 //denotes Job is in pending state
-	JOB_OPER_STATUS_RUNNING     JobOperStatus = 2 //denotes Job is running
-	JOB_OPER_STATUS_ENDED       JobOperStatus = 3 //denotes Job has ended
+	JOB_OPER_STATUS_UNSPECIFIED JobOperStatus = iota //denotes unspecified oper status
+	JOB_OPER_STATUS_PENDING                          //denotes Job is in pending state
+	JOB_OPER_STATUS_RUNNING                          //denotes Job is running
+	JOB_OPER_STATUS_ENDED                            //denotes Job has ended
 )
 
 type JobExitStatus int32
 
 const (
-	JOB_EXIT_STATUS_UNSPECIFIED     JobExitStatus = 0 //denotes unspecified exit status
-	JOB_EXIT_STATUS_EXITED_NORMALLY JobExitStatus = 1 //denotes Job ran to its normal completion
-	JOB_EXIT_STATUS_EXITED_STOPPED  JobExitStatus = 2 //denotes Job was stopped while still running
+	JOB_EXIT_STATUS_UNSPECIFIED     JobExitStatus = iota //denotes unspecified exit status
+	JOB_EXIT_STATUS_EXITED_NORMALLY                      //denotes Job ran to its normal completion
+	JOB_EXIT_STATUS_EXITED_STOPPED                       //denotes Job was stopped while still running
 )
 
 type JobConfig struct {
@@ -294,7 +294,7 @@ type JobConfig struct {
 
 type JobInfo struct {
 	JobId       JobId
-	JobInfo     *JobConfig
+	JobConfig   *JobConfig
 	AdminState  JobAdminState
 	OperStatus  JobOperStatus
 	ExitStatus  JobExitStatus
@@ -319,18 +319,25 @@ func New(authLib JobWorkerAuth) *jobWorker {
 	}
 }
 
-func (jw *jobWorker) StartJob(ctx context.Context, jobInfo *JobConfig) (string, error) {
+func (jw *jobWorker) StartJob(ctx context.Context, jobConfig *JobConfig) (JobId, error) {
 	oper := "StartJob"
 	if !jw.jobAuth.IsAuthorized(getUserKey(ctx), getOrganizationKey(ctx), oper) {
 		return "", fmt.Errorf("%s:%s not authorized to perform %s", getUserKey(ctx), getOrganizationKey(ctx), oper)
 	}
 
-	jobId := "Job-" + uuid.New().String()
+	jobId := JobId("Job-" + uuid.New().String())
+
+	jobInfo := JobInfo{
+		JobId:     jobId,
+		JobConfig: jobConfig,
+	}
+
+	jw.jobInfos[jobId] = jobInfo
 
 	return jobId, nil
 }
 
-func (jw *jobWorker) StopJob(ctx context.Context, jobId string) error {
+func (jw *jobWorker) StopJob(ctx context.Context, jobId JobId) error {
 	oper := "StopJob"
 	if !jw.jobAuth.IsAuthorized(getUserKey(ctx), getOrganizationKey(ctx), oper) {
 		return fmt.Errorf("%s:%s not authorized to perform %s", getUserKey(ctx), getOrganizationKey(ctx), oper)
@@ -338,7 +345,7 @@ func (jw *jobWorker) StopJob(ctx context.Context, jobId string) error {
 	return nil
 }
 
-func (jw *jobWorker) QueryJob(ctx context.Context, jobId string) (*JobInfo, error) {
+func (jw *jobWorker) QueryJob(ctx context.Context, jobId JobId) (*JobInfo, error) {
 	oper := "QueryJob"
 	if !jw.jobAuth.IsAuthorized(getUserKey(ctx), getOrganizationKey(ctx), oper) {
 		return nil, fmt.Errorf("%s:%s not authorized to perform %s", getUserKey(ctx), getOrganizationKey(ctx), oper)
@@ -346,8 +353,8 @@ func (jw *jobWorker) QueryJob(ctx context.Context, jobId string) (*JobInfo, erro
 	return &JobInfo{}, nil
 }
 
-func (jw *jobWorker) StreamLog(ctx context.Context, jobId string, logStream *chan string) error {
-	oper := "StreamLog"
+func (jw *jobWorker) StreamJobLog(ctx context.Context, jobId JobId, logStream chan string) error {
+	oper := "StreamJobLog"
 	if !jw.jobAuth.IsAuthorized(getUserKey(ctx), getOrganizationKey(ctx), oper) {
 		return fmt.Errorf("%s:%s not authorized to perform %s", getUserKey(ctx), getOrganizationKey(ctx), oper)
 	}
@@ -378,32 +385,31 @@ When the job work library starts a job, after performing the required authorizat
 
 1. Create a job info record with a unique job identifier with all program, parameters and resource limits
 1. Set the job's administrative status to STARTED and its operational status to PENDING
-1. New mount, pid, network and UTS namespaces for the job need to be created in order to isolate the job from other jobs. In order to create these new namespaces the calling process will be respawned by cloning it via the go exec.Command `/proc/self/exe jobworker run <command> <command args>` and setting the sys proc attributes of the command - syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWNET | syscall.CLONE_NEWUTS. The respawned process will have new namespaces and will be the parent process of the actual job command.
-1. Set the stdout of the exec.Command to a reference of a go bytes.Buffer. When the command completes, this buffer will contain the exit code and exit status of the actual command as written by the parent process to stdout.
+1. New mount, pid, network and UTS namespaces for the job need to be created in order to isolate the job from other jobs. In order to create these new namespaces the calling process will be respawned by cloning it via the go exec.Command `/proc/self/exe jobworker run <command> <cgroup limits> <command args>` and setting the sys proc attributes of the command - syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWNET | syscall.CLONE_NEWUTS. The respawned process will have new namespaces and will be the parent process of the actual job command.
+1. Create a temporary job log file to hold the parent command's stdout and stderr messages and assign the file to both the command's stdout and stderr. Job logs will be maintained in **/var/run/jw/`<job_id>`**
 1. Set the job's operational status to RUNNING
 1. Call the Start Function of the exec.Command 
 1. Save the PID of the newly spawned parent process. This PID is the PID of the parent process as the host sees it and not the PID within the parent process's PID namespace. This pid will be used by the JobStop function to locate the parent process's child process - job command.
 1. Call the Wait function of the exec.Command and wait for the parent process to end.
-1. Set the job's exit and exited status from the bytes.Buffer
+1. Set the job's exit code from the parent's exit code
 1. Set the job's operational status to ENDED
 
-Because the respawn operation causes the the user's main function to be invoked, the user will need to call the Job Worker library `Respawned` function to allow the Job Worker library to continue the job start operation.
+Because the respawn operation causes the the user's main function to be invoked, the user will need to call the Job Worker library `Respawned` function to allow the Job Worker library to continue the job start operation. The `Respawned` function should be called by the user's main when os.Args[1] is equal to **jobworker**
 
 #### Respawned
 
 When this function is invoked, it will be running in the context of the parent process of the job command to be run.  The `Respawned` function will continue the process of starting the job command by performing the following steps:
 
 1. Sets the hostname for job via the syscall.Sethostname function
-1. Create and configure Cgroups for CPU, Memory and Disk limits by modifying cgroup files in /sys/fs/cgroup/cpu, /sys/fs/cgroup/memory and /sys/fs/cgroup/io respectively. The following cgroup attributes will be updated based on the limits passed into JobStart function:
+1. Create and configure Cgroups for CPU, Memory and Disk limits by modifying cgroup files in /sys/fs/cgroup/cpu, /sys/fs/cgroup/memory and /sys/fs/cgroup/io respectively. The following cgroup attributes will be updated based on the limits passed in the `/proc/self/exe' which are available in os.Args
     1. Memory - **/sys/fs/cgroup/memory/jw/`<job_id>`/memory.limit_in_bytes**
     2. CPU - **/sys/fs/cgroup/cpu/jw/`<job_id>`/cpu.cfs_period_us** and **/sys/fs/cgroup/cpu/jw/`<job_id>`/cpu.cfs_quota_us**
     2. Disk - **/sys/fs/group/io/jw/`<job_id>`/io.max**
 1. Enable the local loopback interface in the jobs network namespace.
 1. Create a go exec.Command to run the job's command including any optional command arguments. The job's command and command arguments are obtained from os.Args as these were passed as parameters of the `/proc/self/exe` respawn command.
-1. Create a temporary job log file to hold the job's stdout and stderr messages and assign the file to both the command's stdout and stderr
 1. Start the command for the job
 1. Wait on command completion
-1. Write the job's exit code and exit status to stdout
+1. Parent process exits and sets it exit code to that of the job's command exit code
 
 #### Stop Job
 
@@ -430,15 +436,13 @@ When the job work library is asked for a job's log, after performing the require
 
 1. Validate the job id against the list of job info records, and if not found return a job not found error
 1. Initialize total log file bytes read to zero
+1. Open job log file from `/var/run/jw/<job_id>/
 1. In a polling loop perform the following:
-    1. Open job log file
     1. Seek to the file location of total log bytes read
     1. Read the job log file, one line at a time and write each record to the user's supplied go channel until EOF
-    1. Close log file
     1. Update the total log file bytes read from the file. 
     1. Wait for 1 second
     1. If job operational is ENDED, break loop
-1. Open job log file
 1. Seek to the file location of total log bytes read
 1. Read the job log file, one line at a time and write each record to the user's supplied go channel until EOF
 1. Close log file
