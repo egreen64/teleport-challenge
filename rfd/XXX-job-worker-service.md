@@ -378,7 +378,7 @@ When the job work library starts a job, after performing the required authorizat
 
 1. Create a job info record with a unique job identifier with all program, parameters and resource limits
 1. Set the job's administrative status to STARTED and its operational status to PENDING
-1. New mount, pid and network namespaces for the job need to be created in order to isolate the job from other jobs. In order to create these new namespaces the calling process will be respawned by cloning it via the go exec.Command `/proc/self/exe jobworker run <command> <command args>` and setting the sys proc attributes of the command - syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWNET. The respawned process will have new namespaces and will be the parent process of the actual job command.
+1. New mount, pid, network and UTS namespaces for the job need to be created in order to isolate the job from other jobs. In order to create these new namespaces the calling process will be respawned by cloning it via the go exec.Command `/proc/self/exe jobworker run <command> <command args>` and setting the sys proc attributes of the command - syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWNET | syscall.CLONE_NEWUTS. The respawned process will have new namespaces and will be the parent process of the actual job command.
 1. Set the stdout of the exec.Command to a reference of a go bytes.Buffer. When the command completes, this buffer will contain the exit code and exit status of the actual command as written by the parent process to stdout.
 1. Set the job's operational status to RUNNING
 1. Call the Start Function of the exec.Command 
@@ -394,7 +394,10 @@ Because the respawn operation causes the the user's main function to be invoked,
 When this function is invoked, it will be running in the context of the parent process of the job command to be run.  The `Respawned` function will continue the process of starting the job command by performing the following steps:
 
 1. Sets the hostname for job via the syscall.Sethostname function
-1. Create and configure Cgroups for CPU, Memory and Disk limits by modifying cgroup files in /sys/fs/cgroup/cpu, /sys/fs/cgroup/memory and /sys/fs/cgroup/io respectively.
+1. Create and configure Cgroups for CPU, Memory and Disk limits by modifying cgroup files in /sys/fs/cgroup/cpu, /sys/fs/cgroup/memory and /sys/fs/cgroup/io respectively. The following cgroup attributes will be updated based on the limits passed into JobStart function:
+    1. Memory - **/sys/fs/cgroup/memory/jw/`<job_id>`/memory.limit_in_bytes**
+    2. CPU - **/sys/fs/cgroup/cpu/jw/`<job_id>`/cpu.cfs_period_us** and **/sys/fs/cgroup/cpu/jw/`<job_id>`/cpu.cfs_quota_us**
+    2. Disk - **/sys/fs/group/io/jw/`<job_id>`/io.max**
 1. Enable the local loopback interface in the jobs network namespace.
 1. Create a go exec.Command to run the job's command including any optional command arguments. The job's command and command arguments are obtained from os.Args as these were passed as parameters of the `/proc/self/exe` respawn command.
 1. Create a temporary job log file to hold the job's stdout and stderr messages and assign the file to both the command's stdout and stderr
@@ -427,9 +430,9 @@ When the job work library is asked for a job's log, after performing the require
 
 1. Validate the job id against the list of job info records, and if not found return a job not found error
 1. Initialize total log file bytes read to zero
-1. In a loop perform the following 
+1. In a polling loop perform the following:
     1. Open job log file
-    1. Seek to the file location of total log bytes read
+    1. Seek to the file location of total log bytes re ad
     1. Read the job log file, one line at a time and write each record to the user's supplied go channel until EOF
     1. Close log file
     1. Update the total log file bytes read from the file. 
@@ -440,6 +443,8 @@ When the job work library is asked for a job's log, after performing the require
 1. Read the job log file, one line at a time and write each record to the user's supplied go channel until EOF
 1. Close log file
 1. Close user supplied go channel to indicate to user that there are no more log messages 
+
+An alternative approach to having a polling loop would be to use the **inotify** api to get notifications when the job's log file is updated.
 
 ### Transport Security
 
