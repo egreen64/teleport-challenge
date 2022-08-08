@@ -432,7 +432,7 @@ When the job work library is asked for a job's log, after performing the require
 1. Initialize total log file bytes read to zero
 1. In a polling loop perform the following:
     1. Open job log file
-    1. Seek to the file location of total log bytes re ad
+    1. Seek to the file location of total log bytes read
     1. Read the job log file, one line at a time and write each record to the user's supplied go channel until EOF
     1. Close log file
     1. Update the total log file bytes read from the file. 
