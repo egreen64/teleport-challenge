@@ -407,6 +407,7 @@ When this function is invoked, it will be running in the context of the parent p
     2. Disk - **/sys/fs/group/io/jw/`<job_id>`/io.max**
 1. Enable the local loopback interface in the jobs network namespace.
 1. Create a go exec.Command to run the job's command including any optional command arguments. The job's command and command arguments are obtained from os.Args as these were passed as parameters of the `/proc/self/exe` respawn command.
+1. Set command's stdout and stderr to current process's stdout/stderr - this causes child's stout/stderr to be written to job log file associated with current process (parent).
 1. Start the command for the job
 1. Wait on command completion
 1. Parent process exits and sets it exit code to that of the job's command exit code
